@@ -22,11 +22,13 @@
 #include "Game.h"
 #include "ChiliException.h"
 
+#ifdef _WIN32
+
 int WINAPI wWinMain( HINSTANCE hInst,HINSTANCE,LPWSTR pArgs,INT )
 {
 	try
 	{
-		MainWindow wnd( hInst,pArgs );		
+		MainWindow wnd( hInst,pArgs );
 		try
 		{
 			Game theGame( wnd );
@@ -37,7 +39,7 @@ int WINAPI wWinMain( HINSTANCE hInst,HINSTANCE,LPWSTR pArgs,INT )
 		}
 		catch( const ChiliException& e )
 		{
-			const std::wstring eMsg = e.GetFullMessage() + 
+			const std::wstring eMsg = e.GetFullMessage() +
 				L"\n\nException caught at Windows message loop.";
 			wnd.ShowMessageBox( e.GetExceptionType(),eMsg,MB_ICONERROR );
 		}
@@ -45,7 +47,7 @@ int WINAPI wWinMain( HINSTANCE hInst,HINSTANCE,LPWSTR pArgs,INT )
 		{
 			// need to convert std::exception what() string from narrow to wide string
 			const std::string whatStr( e.what() );
-			const std::wstring eMsg = std::wstring( whatStr.begin(),whatStr.end() ) + 
+			const std::wstring eMsg = std::wstring( whatStr.begin(),whatStr.end() ) +
 				L"\n\nException caught at Windows message loop.";
 			wnd.ShowMessageBox( L"Unhandled STL Exception",eMsg,MB_ICONERROR );
 		}
@@ -77,3 +79,60 @@ int WINAPI wWinMain( HINSTANCE hInst,HINSTANCE,LPWSTR pArgs,INT )
 
 	return 0;
 }
+
+#else
+
+#include <SDL3/SDL_main.h>
+
+int main( int argc,char* argv[] )
+{
+	try
+	{
+		MainWindow wnd( argc,argv );
+		try
+		{
+			Game theGame( wnd );
+			while( wnd.ProcessMessage() )
+			{
+				theGame.Go();
+			}
+		}
+		catch( const ChiliException& e )
+		{
+			const std::wstring eMsg = e.GetFullMessage() +
+				L"\n\nException caught at main loop.";
+			wnd.ShowMessageBox( e.GetExceptionType(),eMsg );
+		}
+		catch( const std::exception& e )
+		{
+			const std::string whatStr( e.what() );
+			const std::wstring eMsg = std::wstring( whatStr.begin(),whatStr.end() ) +
+				L"\n\nException caught at main loop.";
+			wnd.ShowMessageBox( L"Unhandled STL Exception",eMsg );
+		}
+		catch( ... )
+		{
+			wnd.ShowMessageBox( L"Unhandled Non-STL Exception",
+				L"\n\nException caught at main loop." );
+		}
+	}
+	catch( const ChiliException& e )
+	{
+		const std::wstring eMsg = e.GetFullMessage() +
+			L"\n\nException caught at window creation.";
+		std::string narrowMsg( eMsg.begin(),eMsg.end() );
+		SDL_ShowSimpleMessageBox( SDL_MESSAGEBOX_ERROR,"Error",narrowMsg.c_str(),nullptr );
+	}
+	catch( const std::exception& e )
+	{
+		SDL_ShowSimpleMessageBox( SDL_MESSAGEBOX_ERROR,"Unhandled STL Exception",e.what(),nullptr );
+	}
+	catch( ... )
+	{
+		SDL_ShowSimpleMessageBox( SDL_MESSAGEBOX_ERROR,"Error","Unhandled Non-STL Exception",nullptr );
+	}
+
+	return 0;
+}
+
+#endif

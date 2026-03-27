@@ -20,10 +20,14 @@
 ******************************************************************************************/
 #include "MainWindow.h"
 #include "Graphics.h"
-#include "DXErr.h"
 #include "ChiliException.h"
 #include <assert.h>
 #include <string>
+#include <cstring>
+
+#ifdef _WIN32
+// ==================== Windows / Direct3D 11 Implementation ====================
+#include "DXErr.h"
 #include <array>
 
 // Ignore the intellisense error "cannot open source file" for .shh files.
@@ -66,9 +70,9 @@ Graphics::Graphics( HWNDKey& key )
 	createFlags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 #endif
-	
+
 	// create device and front/back buffers
-	if( FAILED( hr = D3D11CreateDeviceAndSwapChain( 
+	if( FAILED( hr = D3D11CreateDeviceAndSwapChain(
 		nullptr,
 		D3D_DRIVER_TYPE_HARDWARE,
 		nullptr,
@@ -96,7 +100,7 @@ Graphics::Graphics( HWNDKey& key )
 	}
 
 	// create a view on backbuffer that we can render to
-	if( FAILED( hr = pDevice->CreateRenderTargetView( 
+	if( FAILED( hr = pDevice->CreateRenderTargetView(
 		pBackBuffer.Get(),
 		nullptr,
 		&pRenderTargetView ) ) )
@@ -163,7 +167,7 @@ Graphics::Graphics( HWNDKey& key )
 	{
 		throw CHILI_GFX_EXCEPTION( hr,L"Creating pixel shader" );
 	}
-	
+
 
 	/////////////////////////////////////////////////
 	// create vertex shader for framebuffer
@@ -176,7 +180,7 @@ Graphics::Graphics( HWNDKey& key )
 	{
 		throw CHILI_GFX_EXCEPTION( hr,L"Creating vertex shader" );
 	}
-	
+
 
 	//////////////////////////////////////////////////////////////
 	// create and fill vertex buffer with quad for rendering frame
@@ -201,7 +205,7 @@ Graphics::Graphics( HWNDKey& key )
 		throw CHILI_GFX_EXCEPTION( hr,L"Creating vertex buffer" );
 	}
 
-	
+
 	//////////////////////////////////////////
 	// create input layout for fullscreen quad
 	const D3D11_INPUT_ELEMENT_DESC ied[] =
@@ -236,7 +240,7 @@ Graphics::Graphics( HWNDKey& key )
 	}
 
 	// allocate memory for sysbuffer (16-byte aligned for faster access)
-	pSysBuffer = reinterpret_cast<Color*>( 
+	pSysBuffer = reinterpret_cast<Color*>(
 		_aligned_malloc( sizeof( Color ) * Graphics::ScreenWidth * Graphics::ScreenHeight,16u ) );
 }
 
@@ -358,3 +362,119 @@ std::wstring Graphics::Exception::GetExceptionType() const
 {
 	return L"Chili Graphics Exception";
 }
+
+#else
+// ==================== SDL3 Implementation ====================
+
+#define CHILI_GFX_EXCEPTION( note ) Graphics::Exception( note,L"Graphics.cpp",__LINE__ )
+
+Graphics::Graphics( HWNDKey& key )
+{
+	assert( key.pWindow != nullptr );
+
+	// Create renderer with VSync
+	pRenderer = SDL_CreateRenderer( key.pWindow,nullptr );
+	if( !pRenderer )
+	{
+		throw CHILI_GFX_EXCEPTION( L"Creating SDL renderer" );
+	}
+	SDL_SetRenderVSync( pRenderer,1 );
+
+	// Set logical presentation for proper scaling on Retina displays
+	SDL_SetRenderLogicalPresentation( pRenderer,ScreenWidth,ScreenHeight,
+		SDL_LOGICAL_PRESENTATION_LETTERBOX );
+
+	// Create streaming texture for the framebuffer
+	pFramebufferTexture = SDL_CreateTexture( pRenderer,
+		SDL_PIXELFORMAT_ARGB8888,
+		SDL_TEXTUREACCESS_STREAMING,
+		ScreenWidth,ScreenHeight );
+	if( !pFramebufferTexture )
+	{
+		throw CHILI_GFX_EXCEPTION( L"Creating framebuffer texture" );
+	}
+
+	// Use nearest-neighbor filtering to preserve pixel-art look
+	SDL_SetTextureScaleMode( pFramebufferTexture,SDL_SCALEMODE_NEAREST );
+
+	// Allocate system buffer (16-byte aligned for faster access)
+	pSysBuffer = static_cast<Color*>(
+		aligned_alloc( 16u,sizeof( Color ) * ScreenWidth * ScreenHeight ) );
+}
+
+Graphics::~Graphics()
+{
+	if( pSysBuffer )
+	{
+		free( pSysBuffer );
+		pSysBuffer = nullptr;
+	}
+	if( pFramebufferTexture )
+	{
+		SDL_DestroyTexture( pFramebufferTexture );
+		pFramebufferTexture = nullptr;
+	}
+	if( pRenderer )
+	{
+		SDL_DestroyRenderer( pRenderer );
+		pRenderer = nullptr;
+	}
+}
+
+void Graphics::EndFrame()
+{
+	SDL_UpdateTexture( pFramebufferTexture,nullptr,pSysBuffer,
+		ScreenWidth * sizeof( Color ) );
+	SDL_RenderClear( pRenderer );
+	SDL_RenderTexture( pRenderer,pFramebufferTexture,nullptr,nullptr );
+	SDL_RenderPresent( pRenderer );
+}
+
+void Graphics::BeginFrame()
+{
+	memset( pSysBuffer,0u,sizeof( Color ) * ScreenHeight * ScreenWidth );
+}
+
+void Graphics::PutPixel( int x,int y,Color c )
+{
+	assert( x >= 0 );
+	assert( x < int( Graphics::ScreenWidth ) );
+	assert( y >= 0 );
+	assert( y < int( Graphics::ScreenHeight ) );
+	pSysBuffer[Graphics::ScreenWidth * y + x] = c;
+}
+
+
+//////////////////////////////////////////////////
+//           Graphics Exception
+Graphics::Exception::Exception( const std::wstring& note,const wchar_t* file,unsigned int line )
+	:
+	ChiliException( file,line,note )
+{}
+
+std::wstring Graphics::Exception::GetFullMessage() const
+{
+	const std::wstring& note = GetNote();
+	const std::wstring location = GetLocation();
+	std::wstring msg;
+	if( !note.empty() )
+		msg += std::wstring( L"Note: " ) + note + L"\n";
+	// Append SDL error
+	const char* sdlErr = SDL_GetError();
+	if( sdlErr && sdlErr[0] != '\0' )
+	{
+		msg += L"SDL Error: ";
+		msg += std::wstring( sdlErr,sdlErr + strlen( sdlErr ) );
+		msg += L"\n";
+	}
+	if( !location.empty() )
+		msg += std::wstring( L"Location: " ) + location;
+	return msg;
+}
+
+std::wstring Graphics::Exception::GetExceptionType() const
+{
+	return L"Chili Graphics Exception";
+}
+
+#endif

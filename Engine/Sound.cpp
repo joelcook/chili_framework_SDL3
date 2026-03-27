@@ -1,5 +1,5 @@
-/****************************************************************************************** 
- *	Chili DirectX Framework Sound Pack Version 16.11.11									  *	
+/******************************************************************************************
+ *	Chili DirectX Framework Sound Pack Version 16.11.11									  *
  *	Sound.cpp																			  *
  *	Copyright 2016 PlanetChili.net <http://www.planetchili.net>							  *
  *																						  *
@@ -24,6 +24,9 @@
 #include <fstream>
 #include <array>
 #include <functional>
+
+#ifdef _WIN32
+// ==================== Windows / XAudio2 Implementation ====================
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -157,14 +160,14 @@ SoundSystem::SoundSystem()
 	format->nAvgBytesPerSec = format->nBlockAlign * nSamplesPerSec;
 	format->cbSize = 0;
 	format->wFormatTag = WAVE_FORMAT_PCM;
-	
+
 	// find address of DllGetClassObject() function in the dll
 	const std::function<HRESULT(REFCLSID,REFIID,LPVOID)> DllGetClassObject =
-        reinterpret_cast<HRESULT(WINAPI*)(REFCLSID,REFIID,LPVOID)>( 
+        reinterpret_cast<HRESULT(WINAPI*)(REFCLSID,REFIID,LPVOID)>(
 		GetProcAddress( xaudio_dll,"DllGetClassObject" ) );
 	if( !DllGetClassObject )
-	{		
-		throw CHILI_SOUND_API_EXCEPTION( 
+	{
+		throw CHILI_SOUND_API_EXCEPTION(
 			HRESULT_FROM_WIN32( GetLastError() ),
 			L"Getting process address of 'DllGetClassObject' function" );
 	}
@@ -172,7 +175,7 @@ SoundSystem::SoundSystem()
 	// create the factory class for the XAudio2 component object
 	Microsoft::WRL::ComPtr<IClassFactory> pClassFactory;
 	HRESULT hr;
-	if( FAILED( hr = DllGetClassObject( 
+	if( FAILED( hr = DllGetClassObject(
 		 __uuidof( XAudio2 ),
 		IID_IClassFactory,
 		pClassFactory.ReleaseAndGetAddressOf() ) ) )
@@ -204,6 +207,10 @@ SoundSystem::SoundSystem()
 	{
 		idleChannelPtrs.push_back( std::make_unique<Channel>( *this ) );
 	}
+}
+
+SoundSystem::~SoundSystem()
+{
 }
 
 void SoundSystem::DeactivateChannel( Channel & channel )
@@ -328,7 +335,7 @@ void SoundSystem::Channel::RetargetSound( const Sound* pOld,Sound* pNew )
 
 Sound::Sound( const std::wstring& fileName,bool loopingWithAutoCueDetect )
 	:
-	Sound( fileName,loopingWithAutoCueDetect ? 
+	Sound( fileName,loopingWithAutoCueDetect ?
 		LoopType::AutoEmbeddedCuePoints : LoopType::NotLooping )
 {
 }
@@ -538,7 +545,7 @@ Sound Sound::LoadNonWav( const std::wstring& fileName,LoopType loopType,
 			sound.nBytes = UINT32( (pFormat->nAvgBytesPerSec * duration) / 10000000 + pFormat->nAvgBytesPerSec );
 		}
 	}
-	
+
 	// allocate memory for sample data
 	sound.pData = std::make_unique<BYTE[]>( sound.nBytes );
 
@@ -597,7 +604,7 @@ Sound Sound::LoadNonWav( const std::wstring& fileName,LoopType loopType,
 
 		// Update running total of audio data.
 		nBytesWritten += cbBuffer;
-		
+
 		// Unlock the buffer.
 		if( FAILED( hr = pBuffer->Unlock() ) )
 		{
@@ -618,7 +625,6 @@ Sound Sound::LoadNonWav( const std::wstring& fileName,LoopType loopType,
 
 	// setting looping parameters
 	/////////////////////////////
-	// setting looping parameters
 	switch( loopType )
 	{
 	case LoopType::ManualFloat:
@@ -945,7 +951,7 @@ Sound::Sound( Sound&& donor )
 }
 
 Sound& Sound::operator=( Sound && donor )
-{	
+{
 	// make sure nobody messes with our shit (also needed for cv.wait())
 	std::unique_lock<std::mutex> lock( mutex );
 	// check if there are even any active channels playing our jam
@@ -967,7 +973,7 @@ Sound& Sound::operator=( Sound && donor )
 	loopStart = donor.loopStart;
 	loopEnd = donor.loopEnd;
 	pData = std::move( donor.pData );
-	activeChannelPtrs = std::move( donor.activeChannelPtrs );	
+	activeChannelPtrs = std::move( donor.activeChannelPtrs );
 	for( auto& pChan : activeChannelPtrs )
 	{
 		pChan->RetargetSound( &donor,this );
@@ -1081,3 +1087,256 @@ SoundSystem::MFInitializer::~MFInitializer()
 		MFShutdown();
 	}
 }
+
+#else
+// ==================== macOS / miniaudio Implementation ====================
+
+#define MINIAUDIO_IMPLEMENTATION
+#include "miniaudio.h"
+
+#define CHILI_SOUND_API_EXCEPTION( note ) SoundSystem::APIException( L"Sound.cpp",__LINE__,note )
+#define CHILI_SOUND_FILE_EXCEPTION( filename,note ) SoundSystem::FileException( L"Sound.cpp",__LINE__,note,filename )
+
+// Helper to convert wstring to string (for file paths on macOS)
+static std::string WideToNarrow( const std::wstring& wide )
+{
+	std::string narrow;
+	narrow.reserve( wide.size() );
+	for( wchar_t c : wide )
+	{
+		narrow += static_cast<char>( c );
+	}
+	return narrow;
+}
+
+SoundSystem& SoundSystem::Get()
+{
+	static SoundSystem instance;
+	return instance;
+}
+
+void SoundSystem::SetMasterVolume( float vol )
+{
+	ma_engine_set_volume( Get().pEngine.get(),vol );
+}
+
+ma_engine* SoundSystem::GetEngine()
+{
+	return pEngine.get();
+}
+
+void SoundSystem::PlaySoundBuffer( Sound& s,float freqMod,float vol )
+{
+	std::lock_guard<std::mutex> lock( s.mutex );
+
+	// Clean up finished sounds
+	s.activeSounds.erase(
+		std::remove_if( s.activeSounds.begin(),s.activeSounds.end(),
+			[]( const std::unique_ptr<ma_sound>& snd )
+			{
+				return !ma_sound_is_playing( snd.get() );
+			} ),
+		s.activeSounds.end() );
+
+	// Limit polyphony
+	if( s.activeSounds.size() >= nChannels )
+	{
+		return;
+	}
+
+	// Create a new ma_sound from the file
+	auto pSound = std::make_unique<ma_sound>();
+	ma_result result = ma_sound_init_from_file( pEngine.get(),s.filePath.c_str(),
+		0,nullptr,nullptr,pSound.get() );
+	if( result != MA_SUCCESS )
+	{
+		return;
+	}
+
+	ma_sound_set_pitch( pSound.get(),freqMod );
+	ma_sound_set_volume( pSound.get(),vol );
+	ma_sound_set_looping( pSound.get(),s.looping ? MA_TRUE : MA_FALSE );
+	ma_sound_start( pSound.get() );
+
+	s.activeSounds.push_back( std::move( pSound ) );
+}
+
+SoundSystem::SoundSystem()
+	:
+	pEngine( std::make_unique<ma_engine>() )
+{
+	ma_engine_config config = ma_engine_config_init();
+	config.channels = nChannelsPerSound;
+	config.sampleRate = nSamplesPerSec;
+
+	ma_result result = ma_engine_init( &config,pEngine.get() );
+	if( result != MA_SUCCESS )
+	{
+		throw CHILI_SOUND_API_EXCEPTION( L"Failed to initialize miniaudio engine" );
+	}
+}
+
+SoundSystem::~SoundSystem()
+{
+	if( pEngine )
+	{
+		ma_engine_uninit( pEngine.get() );
+	}
+}
+
+// Sound constructors for macOS
+Sound::Sound( const std::wstring& fileName,bool loopingWithAutoCueDetect )
+	:
+	filePath( WideToNarrow( fileName ) ),
+	looping( loopingWithAutoCueDetect )
+{
+	// Verify file exists
+	SoundSystem::Get();
+	std::ifstream test( filePath );
+	if( !test.good() )
+	{
+		throw CHILI_SOUND_FILE_EXCEPTION( fileName,L"File not found" );
+	}
+}
+
+Sound::Sound( const std::wstring& fileName,LoopType loopType )
+	:
+	filePath( WideToNarrow( fileName ) ),
+	looping( loopType == LoopType::AutoEmbeddedCuePoints ||
+			 loopType == LoopType::AutoFullSound ||
+			 loopType == LoopType::ManualFloat ||
+			 loopType == LoopType::ManualSample )
+{
+	SoundSystem::Get();
+	std::ifstream test( filePath );
+	if( !test.good() )
+	{
+		throw CHILI_SOUND_FILE_EXCEPTION( fileName,L"File not found" );
+	}
+}
+
+Sound::Sound( const std::wstring& fileName,unsigned int loopStart,unsigned int loopEnd )
+	:
+	filePath( WideToNarrow( fileName ) ),
+	looping( true )
+{
+	SoundSystem::Get();
+	std::ifstream test( filePath );
+	if( !test.good() )
+	{
+		throw CHILI_SOUND_FILE_EXCEPTION( fileName,L"File not found" );
+	}
+}
+
+Sound::Sound( const std::wstring& fileName,float loopStart,float loopEnd )
+	:
+	filePath( WideToNarrow( fileName ) ),
+	looping( true )
+{
+	SoundSystem::Get();
+	std::ifstream test( filePath );
+	if( !test.good() )
+	{
+		throw CHILI_SOUND_FILE_EXCEPTION( fileName,L"File not found" );
+	}
+}
+
+Sound::Sound( Sound&& donor )
+{
+	std::lock_guard<std::mutex> lock( donor.mutex );
+	filePath = std::move( donor.filePath );
+	looping = donor.looping;
+	activeSounds = std::move( donor.activeSounds );
+}
+
+Sound& Sound::operator=( Sound&& donor )
+{
+	// Stop all our active sounds first
+	{
+		std::lock_guard<std::mutex> lock( mutex );
+		for( auto& snd : activeSounds )
+		{
+			ma_sound_stop( snd.get() );
+		}
+		activeSounds.clear();
+	}
+
+	std::lock_guard<std::mutex> lock( donor.mutex );
+	filePath = std::move( donor.filePath );
+	looping = donor.looping;
+	activeSounds = std::move( donor.activeSounds );
+	return *this;
+}
+
+void Sound::Play( float freqMod,float vol )
+{
+	SoundSystem::Get().PlaySoundBuffer( *this,freqMod,vol );
+}
+
+void Sound::StopOne()
+{
+	std::lock_guard<std::mutex> lock( mutex );
+	if( !activeSounds.empty() )
+	{
+		ma_sound_stop( activeSounds.front().get() );
+		activeSounds.erase( activeSounds.begin() );
+	}
+}
+
+void Sound::StopAll()
+{
+	std::lock_guard<std::mutex> lock( mutex );
+	for( auto& snd : activeSounds )
+	{
+		ma_sound_stop( snd.get() );
+	}
+	activeSounds.clear();
+}
+
+Sound::~Sound()
+{
+	std::lock_guard<std::mutex> lock( mutex );
+	for( auto& snd : activeSounds )
+	{
+		ma_sound_stop( snd.get() );
+		ma_sound_uninit( snd.get() );
+	}
+	activeSounds.clear();
+}
+
+// Exception implementations for macOS
+SoundSystem::APIException::APIException( const wchar_t* file,unsigned int line,const std::wstring& note )
+	:
+	ChiliException( file,line,note )
+{}
+
+std::wstring SoundSystem::APIException::GetFullMessage() const
+{
+	return L"Note: " + GetNote() + L"\n\n" +
+		L"Location: " + GetLocation();
+}
+
+std::wstring SoundSystem::APIException::GetExceptionType() const
+{
+	return L"Sound System API Exception";
+}
+
+SoundSystem::FileException::FileException( const wchar_t* file,unsigned int line,const std::wstring& note,const std::wstring& filename )
+	:
+	ChiliException( file,line,note ),
+	filename( filename )
+{}
+
+std::wstring SoundSystem::FileException::GetFullMessage() const
+{
+	return L"Filename: " + filename + L"\n\n" +
+		L"Note: " + GetNote() + L"\n\n" +
+		L"Location: " + GetLocation();
+}
+
+std::wstring SoundSystem::FileException::GetExceptionType() const
+{
+	return L"Sound System File Exception";
+}
+
+#endif

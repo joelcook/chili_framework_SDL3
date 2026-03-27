@@ -19,14 +19,20 @@
 *	along with The Chili DirectX Framework.  If not, see <http://www.gnu.org/licenses/>.  *
 ******************************************************************************************/
 #pragma once
+
+#ifdef _WIN32
 #include "ChiliWin.h"
+#else
+#include "ChiliSDL.h"
+#endif
+
 #include "Graphics.h"
 #include "Keyboard.h"
 #include "Mouse.h"
 #include "ChiliException.h"
 #include <string>
 
-// for granting special access to hWnd only for Graphics constructor
+// for granting special access to window handle only for Graphics constructor
 class HWNDKey
 {
 	friend Graphics::Graphics( HWNDKey& );
@@ -36,7 +42,11 @@ public:
 protected:
 	HWNDKey() = default;
 protected:
+#ifdef _WIN32
 	HWND hWnd = nullptr;
+#else
+	SDL_Window* pWindow = nullptr;
+#endif
 };
 
 class MainWindow : public HWNDKey
@@ -47,35 +57,36 @@ public:
 	public:
 		using ChiliException::ChiliException;
 		virtual std::wstring GetFullMessage() const override { return GetNote() + L"\nAt: " + GetLocation(); }
-		virtual std::wstring GetExceptionType() const override { return L"Windows Exception"; }
+		virtual std::wstring GetExceptionType() const override { return L"Window Exception"; }
 	};
 public:
+#ifdef _WIN32
 	MainWindow( HINSTANCE hInst,wchar_t* pArgs );
+#else
+	MainWindow( int argc,char* argv[] );
+#endif
 	MainWindow( const MainWindow& ) = delete;
 	MainWindow& operator=( const MainWindow& ) = delete;
 	~MainWindow();
 	bool IsActive() const;
 	bool IsMinimized() const;
-	void ShowMessageBox( const std::wstring& title,const std::wstring& message,UINT type = MB_OK ) const;
-	void Kill()
-	{
-		PostQuitMessage( 0 );
-	}
+	void ShowMessageBox( const std::wstring& title,const std::wstring& message ) const;
+	void Kill();
 	// returns false if quitting
 	bool ProcessMessage();
-	const std::wstring& GetArgs() const
-	{
-		return args;
-	}
-private:
-	static LRESULT WINAPI _HandleMsgSetup( HWND hWnd,UINT msg,WPARAM wParam,LPARAM lParam );
-	static LRESULT WINAPI _HandleMsgThunk( HWND hWnd,UINT msg,WPARAM wParam,LPARAM lParam );
-	LRESULT HandleMsg( HWND hWnd,UINT msg,WPARAM wParam,LPARAM lParam );
 public:
 	Keyboard kbd;
 	Mouse mouse;
 private:
+#ifdef _WIN32
+	static LRESULT WINAPI _HandleMsgSetup( HWND hWnd,UINT msg,WPARAM wParam,LPARAM lParam );
+	static LRESULT WINAPI _HandleMsgThunk( HWND hWnd,UINT msg,WPARAM wParam,LPARAM lParam );
+	LRESULT HandleMsg( HWND hWnd,UINT msg,WPARAM wParam,LPARAM lParam );
 	static constexpr wchar_t* wndClassName = L"Chili DirectX Framework Window";
 	HINSTANCE hInst = nullptr;
 	std::wstring args;
+#else
+	bool isActive = true;
+	bool isMinimized = false;
+#endif
 };

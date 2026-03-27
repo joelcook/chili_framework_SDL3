@@ -19,9 +19,15 @@
 *	along with The Chili DirectX Framework.  If not, see <http://www.gnu.org/licenses/>.  *
 ******************************************************************************************/
 #pragma once
+
+#ifdef _WIN32
 #include "ChiliWin.h"
 #include <d3d11.h>
 #include <wrl.h>
+#else
+#include "ChiliSDL.h"
+#endif
+
 #include "ChiliException.h"
 #include "Colors.h"
 
@@ -31,21 +37,29 @@ public:
 	class Exception : public ChiliException
 	{
 	public:
+#ifdef _WIN32
 		Exception( HRESULT hr,const std::wstring& note,const wchar_t* file,unsigned int line );
 		std::wstring GetErrorName() const;
 		std::wstring GetErrorDescription() const;
+#else
+		Exception( const std::wstring& note,const wchar_t* file,unsigned int line );
+#endif
 		virtual std::wstring GetFullMessage() const override;
 		virtual std::wstring GetExceptionType() const override;
 	private:
+#ifdef _WIN32
 		HRESULT hr;
+#endif
 	};
 private:
+#ifdef _WIN32
 	// vertex format for the framebuffer fullscreen textured quad
 	struct FSQVertex
 	{
 		float x,y,z;		// position
 		float u,v;			// texcoords
 	};
+#endif
 public:
 	Graphics( class HWNDKey& key );
 	Graphics( const Graphics& ) = delete;
@@ -54,11 +68,12 @@ public:
 	void BeginFrame();
 	void PutPixel( int x,int y,int r,int g,int b )
 	{
-		PutPixel( x,y,{ unsigned char( r ),unsigned char( g ),unsigned char( b ) } );
+		PutPixel( x,y,Color( (unsigned char)r,(unsigned char)g,(unsigned char)b ) );
 	}
 	void PutPixel( int x,int y,Color c );
 	~Graphics();
 private:
+#ifdef _WIN32
 	Microsoft::WRL::ComPtr<IDXGISwapChain>				pSwapChain;
 	Microsoft::WRL::ComPtr<ID3D11Device>				pDevice;
 	Microsoft::WRL::ComPtr<ID3D11DeviceContext>			pImmediateContext;
@@ -71,6 +86,10 @@ private:
 	Microsoft::WRL::ComPtr<ID3D11InputLayout>			pInputLayout;
 	Microsoft::WRL::ComPtr<ID3D11SamplerState>			pSamplerState;
 	D3D11_MAPPED_SUBRESOURCE							mappedSysBufferTexture;
+#else
+	SDL_Renderer* pRenderer = nullptr;
+	SDL_Texture* pFramebufferTexture = nullptr;
+#endif
 	Color*                                              pSysBuffer = nullptr;
 public:
 	static constexpr int ScreenWidth = 800;

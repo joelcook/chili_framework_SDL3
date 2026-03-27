@@ -19,11 +19,14 @@
 *	along with The Chili DirectX Framework.  If not, see <http://www.gnu.org/licenses/>.  *
 ******************************************************************************************/
 #include "MainWindow.h"
-#include "Resource.h"
 #include "Graphics.h"
 #include "ChiliException.h"
 #include "Game.h"
 #include <assert.h>
+
+#ifdef _WIN32
+// ==================== Windows Implementation ====================
+#include "Resource.h"
 
 MainWindow::MainWindow( HINSTANCE hInst,wchar_t * pArgs )
 	:
@@ -79,9 +82,14 @@ bool MainWindow::IsMinimized() const
 	return IsIconic( hWnd ) != 0;
 }
 
-void MainWindow::ShowMessageBox( const std::wstring& title,const std::wstring& message,UINT type ) const
+void MainWindow::ShowMessageBox( const std::wstring& title,const std::wstring& message ) const
 {
-	MessageBox( hWnd,message.c_str(),title.c_str(),type );
+	MessageBox( hWnd,message.c_str(),title.c_str(),MB_OK );
+}
+
+void MainWindow::Kill()
+{
+	PostQuitMessage( 0 );
 }
 
 bool MainWindow::ProcessMessage()
@@ -230,3 +238,198 @@ LRESULT MainWindow::HandleMsg( HWND hWnd,UINT msg,WPARAM wParam,LPARAM lParam )
 
 	return DefWindowProc( hWnd,msg,wParam,lParam );
 }
+
+#else
+// ==================== SDL3 Implementation ====================
+
+MainWindow::MainWindow( int argc,char* argv[] )
+{
+	if( !SDL_Init( SDL_INIT_VIDEO ) )
+	{
+		throw Exception( L"MainWindow.cpp",__LINE__,
+			L"Failed to initialize SDL3." );
+	}
+
+	pWindow = SDL_CreateWindow(
+		"Chili Framework",
+		Graphics::ScreenWidth,
+		Graphics::ScreenHeight,
+		0
+	);
+
+	if( pWindow == nullptr )
+	{
+		throw Exception( L"MainWindow.cpp",__LINE__,
+			L"Failed to create SDL window." );
+	}
+}
+
+MainWindow::~MainWindow()
+{
+	if( pWindow )
+	{
+		SDL_DestroyWindow( pWindow );
+		pWindow = nullptr;
+	}
+	SDL_Quit();
+}
+
+bool MainWindow::IsActive() const
+{
+	return isActive;
+}
+
+bool MainWindow::IsMinimized() const
+{
+	return isMinimized;
+}
+
+void MainWindow::ShowMessageBox( const std::wstring& title,const std::wstring& message ) const
+{
+	// Convert wide strings to narrow for SDL
+	std::string narrowTitle( title.begin(),title.end() );
+	std::string narrowMsg( message.begin(),message.end() );
+	SDL_ShowSimpleMessageBox( SDL_MESSAGEBOX_ERROR,narrowTitle.c_str(),narrowMsg.c_str(),pWindow );
+}
+
+void MainWindow::Kill()
+{
+	SDL_Event quitEvent;
+	quitEvent.type = SDL_EVENT_QUIT;
+	SDL_PushEvent( &quitEvent );
+}
+
+bool MainWindow::ProcessMessage()
+{
+	SDL_Event e;
+	while( SDL_PollEvent( &e ) )
+	{
+		switch( e.type )
+		{
+		case SDL_EVENT_QUIT:
+			return false;
+
+		// ************ WINDOW EVENTS ************ //
+		case SDL_EVENT_WINDOW_FOCUS_GAINED:
+			isActive = true;
+			break;
+		case SDL_EVENT_WINDOW_FOCUS_LOST:
+			isActive = false;
+			kbd.ClearState();
+			break;
+		case SDL_EVENT_WINDOW_MINIMIZED:
+			isMinimized = true;
+			break;
+		case SDL_EVENT_WINDOW_RESTORED:
+			isMinimized = false;
+			break;
+
+		// ************ KEYBOARD MESSAGES ************ //
+		case SDL_EVENT_KEY_DOWN:
+		{
+			if( !e.key.repeat || kbd.AutorepeatIsEnabled() )
+			{
+				const unsigned char vk = SDLKeyToVK( e.key.key );
+				if( vk != 0 )
+				{
+					kbd.OnKeyPressed( vk );
+				}
+			}
+			break;
+		}
+		case SDL_EVENT_KEY_UP:
+		{
+			const unsigned char vk = SDLKeyToVK( e.key.key );
+			if( vk != 0 )
+			{
+				kbd.OnKeyReleased( vk );
+			}
+			break;
+		}
+		case SDL_EVENT_TEXT_INPUT:
+		{
+			// Process each character in the UTF-8 text (usually just one)
+			if( e.text.text && e.text.text[0] != '\0' )
+			{
+				kbd.OnChar( static_cast<unsigned char>( e.text.text[0] ) );
+			}
+			break;
+		}
+
+		// ************ MOUSE MESSAGES ************ //
+		case SDL_EVENT_MOUSE_MOTION:
+		{
+			const int mx = static_cast<int>( e.motion.x );
+			const int my = static_cast<int>( e.motion.y );
+			if( mx >= 0 && mx < Graphics::ScreenWidth && my >= 0 && my < Graphics::ScreenHeight )
+			{
+				mouse.OnMouseMove( mx,my );
+				if( !mouse.IsInWindow() )
+				{
+					mouse.OnMouseEnter();
+				}
+			}
+			else
+			{
+				if( mouse.LeftIsPressed() || mouse.RightIsPressed() )
+				{
+					const int clampedX = std::max( 0,std::min( Graphics::ScreenWidth - 1,mx ) );
+					const int clampedY = std::max( 0,std::min( Graphics::ScreenHeight - 1,my ) );
+					mouse.OnMouseMove( clampedX,clampedY );
+				}
+				else
+				{
+					mouse.OnMouseLeave();
+				}
+			}
+			break;
+		}
+		case SDL_EVENT_MOUSE_BUTTON_DOWN:
+		{
+			const int mx = static_cast<int>( e.button.x );
+			const int my = static_cast<int>( e.button.y );
+			if( e.button.button == SDL_BUTTON_LEFT )
+			{
+				mouse.OnLeftPressed( mx,my );
+			}
+			else if( e.button.button == SDL_BUTTON_RIGHT )
+			{
+				mouse.OnRightPressed( mx,my );
+			}
+			break;
+		}
+		case SDL_EVENT_MOUSE_BUTTON_UP:
+		{
+			const int mx = static_cast<int>( e.button.x );
+			const int my = static_cast<int>( e.button.y );
+			if( e.button.button == SDL_BUTTON_LEFT )
+			{
+				mouse.OnLeftReleased( mx,my );
+			}
+			else if( e.button.button == SDL_BUTTON_RIGHT )
+			{
+				mouse.OnRightReleased( mx,my );
+			}
+			break;
+		}
+		case SDL_EVENT_MOUSE_WHEEL:
+		{
+			const int mx = static_cast<int>( e.wheel.mouse_x );
+			const int my = static_cast<int>( e.wheel.mouse_y );
+			if( e.wheel.y > 0 )
+			{
+				mouse.OnWheelUp( mx,my );
+			}
+			else if( e.wheel.y < 0 )
+			{
+				mouse.OnWheelDown( mx,my );
+			}
+			break;
+		}
+		// ************ END MOUSE MESSAGES ************ //
+		}
+	}
+	return true;
+}
+
+#endif

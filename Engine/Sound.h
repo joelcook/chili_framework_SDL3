@@ -1,5 +1,5 @@
-/****************************************************************************************** 
- *	Chili DirectX Framework Sound Pack Version 16.11.11									  *	
+/******************************************************************************************
+ *	Chili DirectX Framework Sound Pack Version 16.11.11									  *
  *	Sound.h																				  *
  *	Copyright 2016 PlanetChili.net <http://www.planetchili.net>							  *
  *																						  *
@@ -19,23 +19,37 @@
  *	along with this source code.  If not, see <http://www.gnu.org/licenses/>.			  *
  ******************************************************************************************/
 #pragma once
+
+#ifdef _WIN32
 #include "ChiliWin.h"
+#include <wrl\client.h>
+#include "COMInitializer.h"
+#else
+#include "ChiliSDL.h"
+#endif
+
 #include <memory>
 #include <vector>
 #include <mutex>
 #include <condition_variable>
 #include <thread>
+#include <string>
 #include "ChiliException.h"
-#include <wrl\client.h>
-#include "COMInitializer.h"
 
+#ifdef _WIN32
 // forward declare WAVEFORMATEX so we don't have to include bullshit headers
 struct tWAVEFORMATEX;
 typedef tWAVEFORMATEX WAVEFORMATEX;
+#else
+// Forward declare miniaudio types
+struct ma_engine;
+struct ma_sound;
+#endif
 
 class SoundSystem
 {
 public:
+#ifdef _WIN32
 	class APIException : public ChiliException
 	{
 	public:
@@ -47,6 +61,15 @@ public:
 	private:
 		HRESULT hr;
 	};
+#else
+	class APIException : public ChiliException
+	{
+	public:
+		APIException( const wchar_t* file,unsigned int line,const std::wstring& note );
+		virtual std::wstring GetFullMessage() const override;
+		virtual std::wstring GetExceptionType() const override;
+	};
+#endif
 	class FileException : public ChiliException
 	{
 	public:
@@ -57,6 +80,7 @@ public:
 		std::wstring filename;
 	};
 private:
+#ifdef _WIN32
 	class MFInitializer
 	{
 	public:
@@ -92,7 +116,9 @@ private:
 		static constexpr wchar_t* localPath = L"XAudio2_7_32.dll";
 #endif
 	};
+#endif
 public:
+#ifdef _WIN32
 	class Channel
 	{
 		friend class Sound;
@@ -109,16 +135,26 @@ public:
 		struct IXAudio2SourceVoice* pSource = nullptr;
 		class Sound* pSound = nullptr;
 	};
+#endif
 public:
 	SoundSystem( const SoundSystem& ) = delete;
 	static SoundSystem& Get();
 	static void SetMasterVolume( float vol = 1.0f );
+#ifdef _WIN32
 	static const WAVEFORMATEX& GetFormat();
+#endif
 	void PlaySoundBuffer( class Sound& s,float freqMod,float vol );
+#ifndef _WIN32
+	ma_engine* GetEngine();
+#endif
 private:
 	SoundSystem();
+	~SoundSystem();
+#ifdef _WIN32
 	void DeactivateChannel( Channel& channel );
+#endif
 private:
+#ifdef _WIN32
 	COMInitializer comInit;
 	MFInitializer mfInit;
 	XAudioDll xaudio_dll;
@@ -128,19 +164,32 @@ private:
 	std::mutex mutex;
 	std::vector<std::unique_ptr<Channel>> idleChannelPtrs;
 	std::vector<std::unique_ptr<Channel>> activeChannelPtrs;
+#else
+	std::unique_ptr<ma_engine> pEngine;
+	std::mutex mutex;
+#endif
 private:
 	// change these values to match the format of the wav files you are loading
 	// all wav files must have the same format!! (no mixing and matching)
+#ifdef _WIN32
 	static constexpr WORD nChannelsPerSound = 2u;
 	static constexpr DWORD nSamplesPerSec = 44100u;
 	static constexpr WORD nBitsPerSample = 16u;
-	// change this value to increase/decrease the maximum polyphony	
+#else
+	static constexpr unsigned short nChannelsPerSound = 2u;
+	static constexpr unsigned int nSamplesPerSec = 44100u;
+	static constexpr unsigned short nBitsPerSample = 16u;
+#endif
+	// change this value to increase/decrease the maximum polyphony
 	static constexpr size_t nChannels = 64u;
 };
 
 class Sound
 {
+	friend class SoundSystem;
+#ifdef _WIN32
 	friend SoundSystem::Channel;
+#endif
 public:
 	enum class LoopType
 	{
@@ -166,13 +215,16 @@ public:
 	void StopAll();
 	~Sound();
 private:
+#ifdef _WIN32
 	static Sound LoadNonWav( const std::wstring& fileName,LoopType loopType,
 							 unsigned int loopStartSample,unsigned int loopEndSample,
 							 float loopStartSeconds,float loopEndSeconds );
 	Sound( const std::wstring& fileName,LoopType loopType,
 		unsigned int loopStartSample,unsigned int loopEndSample,
 		float loopStartSeconds,float loopEndSeconds );
+#endif
 private:
+#ifdef _WIN32
 	UINT32 nBytes = 0u;
 	bool looping = false;
 	unsigned int loopStart;
@@ -181,6 +233,12 @@ private:
 	std::mutex mutex;
 	std::condition_variable cvDeath;
 	std::vector<SoundSystem::Channel*> activeChannelPtrs;
+#else
+	std::string filePath;
+	bool looping = false;
+	std::mutex mutex;
+	std::vector<std::unique_ptr<ma_sound>> activeSounds;
+#endif
 	static constexpr unsigned int nullSample = 0xFFFFFFFFu;
 	static constexpr float nullSeconds = -1.0f;
 };
